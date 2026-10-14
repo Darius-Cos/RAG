@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+faiss_index/
+data/
+*.pkl
+*.faiss
+.DS_Store
+venv/
+.venv/
+EOF

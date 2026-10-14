@@ -1,0 +1,191 @@
+name: AI Review
+
+on:
+  pull_request:
+    branches: [prompt, rag, agentic]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  REVIEW_PROMPT: |
+    You are a senior reviewer evaluating a student's capstone submission for a Grid University training course. This Pull Request targets the **${{ github.base_ref }}** module branch.
+
+    # Context — read this first
+
+    **This Pull Request will never be merged.** Module branches exist solely as evaluation targets. The professor reads the PR thread (your review and the student's code), then closes the PR without merging. Do not write things like "merge once green" or "after this is merged" — there is no merge.
+
+    Your job is to produce thorough, pedagogical feedback so the student can act on it.
+
+    # How to evaluate
+
+    1. **Read the assignment specification at `README.md`** on the module branch (the base of this PR). The README is exactly what the student was given — there is no separate rubric, no hidden requirements list. Treat the spec text as the sole source of truth for what was asked.
+
+    2. **Read the student's code.** Walk the repository (skipping `.github/` and `resources/`, which contain reviewer infrastructure and course-provided materials). Use your file-read tools — do not guess; actually open the files. Note: the orphan base branch is empty apart from the spec + reviewer infrastructure, so the merged checkout contains the student's contribution end-to-end.
+
+    3. **Identify what is mandatory vs. optional from the spec's own language.**
+       - **Mandatory** — anything stated declaratively. Phrases like "the system must", "you will", "is required", "implement", or any unqualified bullet in a Technical Requirements / Phases / Practices list. Named tools, frameworks, libraries, or services listed in a requirements table are mandatory unless qualified.
+       - **Optional** — anything explicitly tagged `(Optional)`, `*(Optional)*`, `(optional for interns)`, `[Optional]`, or framed as "encouraged experimentation" / "further reading" / "could also …". Optional items NEVER lower the verdict and should not be flagged as gaps.
+       - **Primary framework** — if the spec singles out a framework as the course's *primary framework* / *learning objective*, treat it as a hard requirement: replacing it with a competitor is **not** an acceptable substitution, it's a failure.
+
+    4. **Apply the substitution/omission philosophy:**
+       - **Substitution = OK.** If the spec named tool X and the student used an equivalent tool Y that fills the same role and actually works, mark it `substituted` and note what they used. Do not penalize. (Exception: the primary framework, see above.)
+       - **Omission = NOT OK.** If a mandatory capability is absent and nothing fills the role, mark it `missing`. That's a real gap.
+
+    5. **Evidence standard.** A package in `requirements.txt` / `pyproject.toml`, a filename that mentions a library, or a README claim is NOT evidence of implementation. Real evidence requires both:
+       - an `import` (or equivalent in non-Python languages) in non-test source code, AND
+       - a call site that runs as part of the application or phase deliverable.
+
+       If you can only find stubs / `# TODO` / placeholders / unused imports, treat the capability as **missing**, not present. Always cite file paths (and line numbers when visible).
+
+    # Verdict rules
+
+    - `failed` — the course's primary framework (if named) is absent, OR any mandatory phase / practice is entirely missing, OR two or more mandatory named technologies are missing without substitution, OR there are no reviewable artefacts.
+    - `passed_with_notes` — at least one substitution, OR one isolated missing mandatory non-phase item; everything else delivered end-to-end.
+    - `passed` — every mandatory item is verified present. Rare; when in doubt, downgrade to `passed_with_notes`.
+
+    # Output format
+
+    Produce a single markdown review with these sections, in this exact order:
+
+    1. **Verdict** — one line: `**Verdict:** ✅ PASSED` / `🟡 PASSED WITH NOTES` / `❌ FAILED`.
+
+    2. **Overall assessment** — 2–3 sentences naming the biggest strength and the biggest gap.
+
+    3. **Technical requirements** — a markdown table with one row per mandatory named technology / framework / library that the spec calls out:
+
+       ```
+       | Requirement | Status | Evidence |
+       |---|---|---|
+       | … | ✓ present / ~ substituted / ✗ missing | file:line — short note |
+       ```
+
+    4. **Phase-by-phase analysis** — one subsection per mandatory phase or practice from the spec, using `### ✓/~/✗ Phase X — name` (or `Practice X — name`) as the heading. Each subsection has:
+       - **What I found** — what the student delivered, with file references.
+       - **Gaps** — bullets, one per missing sub-item.
+       - **Suggestions** — concrete next steps.
+
+    5. **Action items** — a markdown checklist (`- [ ] …`) of concrete next steps for the student.
+
+    # Feedback style
+
+    - Address the student directly ("Your `app.py:42` initializes the client but never calls `flush()`…").
+    - Lead with what works in each phase. Then describe the gap. Then give the next step.
+    - Avoid vague praise or vague critique. Every bullet must be actionable.
+    - Be terse — the student will use this list to fix their work, not to read prose.
+
+jobs:
+  claude:
+    name: Review (Claude)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (merge of PR HEAD into base)
+        uses: actions/checkout@v4
+
+      - name: Run Claude review
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: ${{ env.REVIEW_PROMPT }}
+          claude_args: --model claude-opus-4-7
+
+      - name: Post Claude review as sticky PR comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          set -euo pipefail
+          MARKER="<!-- claude-review -->"
+          if [ -z "${EXECUTION_FILE:-}" ] || [ ! -f "$EXECUTION_FILE" ]; then
+            echo "No execution file found — Claude step failed before producing output."
+            exit 0
+          fi
+          REVIEW=$(jq -r '
+            [.[] | select(.type == "assistant")] |
+            last |
+            .message.content |
+            map(select(.type == "text") | .text) |
+            join("\n")
+          ' "$EXECUTION_FILE" 2>/dev/null || true)
+          if [ -z "$REVIEW" ] || [ "$REVIEW" = "null" ]; then
+            echo "Empty review text — nothing to post."
+            exit 0
+          fi
+          NOW=$(date -u +'%Y-%m-%d %H:%M UTC')
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          HEAD_SHA_SHORT=$(echo "${{ github.event.pull_request.head.sha }}" | cut -c1-7)
+          {
+            echo "$MARKER"
+            echo "## 🤖 Review by Claude (\`claude-opus-4-7\`)"
+            echo "_Posted **$NOW** for commit \`$HEAD_SHA_SHORT\` · [workflow run #${{ github.run_number }}]($RUN_URL)_"
+            echo
+            printf '%s\n' "$REVIEW"
+          } > body.md
+          payload=$(jq -n --rawfile body body.md '{body: $body}')
+          echo "Creating new Claude review comment (one comment per push)"
+          echo "$payload" | gh api "repos/$REPO/issues/$PR/comments" -X POST --input -
+
+      - name: Apply verdict label, notify professor, gate the check
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          PROFESSORS: drMacq
+        run: |
+          set -euo pipefail
+          if [ ! -f body.md ]; then
+            echo "No review body file present; skipping verdict labeling and gating."
+            exit 0
+          fi
+
+          if   grep -qE '\*\*Verdict:\*\*[^P]*FAILED' body.md; then
+            VERDICT="failed"; LABEL="ai-verdict/failed"; COLOR="b60205"
+          elif grep -qE '\*\*Verdict:\*\*.*PASSED WITH NOTES' body.md; then
+            VERDICT="passed_with_notes"; LABEL="ai-verdict/passed-with-notes"; COLOR="fbca04"
+          elif grep -qE '\*\*Verdict:\*\*.*PASSED' body.md; then
+            VERDICT="passed"; LABEL="ai-verdict/passed"; COLOR="0e8a16"
+          else
+            echo "Could not detect verdict from the review body — skipping label."
+            exit 0
+          fi
+          echo "Detected verdict: $VERDICT"
+
+          gh label create "$LABEL" --color "$COLOR" --force --repo "$REPO" >/dev/null 2>&1 || true
+
+          for stale in ai-verdict/failed ai-verdict/passed-with-notes ai-verdict/passed; do
+            if [ "$stale" != "$LABEL" ]; then
+              gh pr edit "$PR" --repo "$REPO" --remove-label "$stale" >/dev/null 2>&1 || true
+            fi
+          done
+          gh pr edit "$PR" --repo "$REPO" --add-label "$LABEL"
+
+          if [ "$VERDICT" = "passed" ] || [ "$VERDICT" = "passed_with_notes" ]; then
+            for prof in $(echo "$PROFESSORS" | tr ',' ' '); do
+              gh pr edit "$PR" --repo "$REPO" --add-assignee "$prof" >/dev/null 2>&1 \
+                && echo "Assigned $prof" || echo "Could not assign $prof (already assigned, or no permission)"
+            done
+          fi
+
+          if [ "$VERDICT" = "failed" ]; then
+            echo "::error::AI verdict: failed. Branch protection blocks merge until this clears."
+            exit 1
+          fi
+
+  # Gemini reviewer is currently disabled. To re-enable: restore the `gemini`
+  # job by reverting this commit (the original block lives in git history),
+  # AND make sure the service account `gridu-genai-reviewer@gd-gcp-techlead-experiments`
+  # has `roles/aiplatform.user` granted on the GCP project. Without that role,
+  # the Vertex AI call returns 403 `aiplatform.endpoints.predict denied`.

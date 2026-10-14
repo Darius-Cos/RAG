@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Credentials & secrets
+.env
+*.json
+!resources/datasets/*.json
+service_account*.json
+gcp_*.json
+
+# Vector index (generated, can be rebuilt)
+faiss_index/
+qdrant_storage/
+
+# PDF uploads & caption cache (large binary files)
+data/
+*.pdf
+
+# Evaluation results (generated, not source)
+evaluation/results/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp

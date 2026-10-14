@@ -1,0 +1,33 @@
+name: Cleanup head branch
+
+# When a PR against a module branch is closed (merge is impossible
+# per the no-merge policy, so this fires on the "Close pull request"
+# button), delete the source branch automatically so the repo's
+# branch list stays clean.
+#
+# Only deletes head branches that live in this same repository —
+# fork PRs are skipped automatically.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [prompt, rag, agentic]
+
+permissions:
+  contents: write
+
+jobs:
+  delete:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete head branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          echo "Deleting head branch: $REF"
+          gh api -X DELETE "repos/$REPO/git/refs/heads/$REF" --silent \
+            && echo "Branch deleted." \
+            || echo "Branch was already absent — nothing to do."

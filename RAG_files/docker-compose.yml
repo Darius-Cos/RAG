@@ -1,0 +1,32 @@
+services:
+  app:
+    build: .
+    container_name: rag_app
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    volumes:
+      - ./resources:/app/resources
+      - ./faiss_index:/app/faiss_index
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: rag_qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:

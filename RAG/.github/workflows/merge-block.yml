@@ -1,0 +1,29 @@
+name: Merge block
+
+# Module branches (prompt / rag / agentic) are evaluation targets only.
+# Their PRs are never merged. This workflow's sole job is to fail every
+# PR run against those branches so branch protection can require a green
+# `Merge blocked (no-merge policy)` check — which never goes green —
+# and the GitHub Merge pull request button stays permanently disabled.
+#
+# Updating the module-branch contents (rubrics, README, workflows) is
+# done by an admin via direct `git push`, which is not subject to this
+# workflow because the workflow only runs on `pull_request` events.
+
+on:
+  pull_request:
+    branches: [prompt, rag, agentic]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  block:
+    name: Merge blocked (no-merge policy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse the merge
+        run: |
+          echo "::error title=Merge blocked::Module-branch PRs are evaluation-only and are never merged. Close this PR without merging once the AI reviewer has produced its verdict. See .github/SETUP.md."
+          exit 1
